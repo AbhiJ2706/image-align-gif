@@ -1,3 +1,4 @@
+import argparse
 import sys
 import cv2
 import numpy as np
@@ -117,6 +118,109 @@ class InteractiveCorrection:
                 return None, None  # Signal to exit program
         
         return False, None
+
+def create_detection_boxes_gif(original_images, detection_info, output_path):
+    """
+    Create a GIF showing the detection boxes on the original images
+    """
+    gif_images = []
+    
+    for i, (img, det_info) in enumerate(zip(original_images, detection_info)):
+        # Create a copy of the original image
+        display_img = img.copy()
+        
+        # Draw detection box
+        box_x, box_y, box_w, box_h = det_info['box']
+        
+        # Choose color based on detection method
+        if det_info['method'] == 'reference':
+            color = (0, 255, 0)  # Green for reference
+        elif det_info['method'] == 'user_corrected':
+            color = (255, 0, 255)  # Magenta for user corrected
+        elif det_info['confidence'] > 0.6:
+            color = (0, 255, 0)  # Green for high confidence
+        elif det_info['confidence'] > 0.3:
+            color = (0, 255, 255)  # Yellow for medium confidence
+        else:
+            color = (0, 0, 255)  # Red for low confidence/fallback
+        
+        # Draw rectangle with thicker line for visibility
+        cv2.rectangle(display_img, (box_x, box_y), (box_x + box_w, box_y + box_h), color, 3)
+        
+        # Add frame number and detection info
+        cv2.putText(display_img, f"Frame {i+1}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        cv2.putText(display_img, f"{det_info['method']}", 
+                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
+        # Convert BGR to RGB for PIL
+        rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+        gif_images.append(Image.fromarray(rgb_img))
+    
+    # Save as GIF
+    gif_images[0].save(
+        output_path,
+        save_all=True,
+        append_images=gif_images[1:],
+        duration=500,
+        loop=0
+    )
+    
+    print(f"Detection boxes GIF created: {output_path}")
+
+def create_cropped_gif(aligned_images, output_path):
+    """
+    Create a GIF with black space cropped out while keeping subject centered
+    """
+    # Find the common non-black region across all images
+    min_x, min_y = float('inf'), float('inf')
+    max_x, max_y = 0, 0
+    
+    for img_array in aligned_images:
+        # Convert to grayscale to find non-black regions
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Find all non-black pixels (threshold slightly above 0 to handle compression artifacts)
+        non_black_coords = np.where(gray > 0)
+        
+        if len(non_black_coords[0]) > 0:
+            y_coords, x_coords = non_black_coords
+            min_x = min(min_x, np.min(x_coords))
+            min_y = min(min_y, np.min(y_coords))
+            max_x = max(max_x, np.max(x_coords))
+            max_y = max(max_y, np.max(y_coords))
+    
+    # Convert to integers and add some padding
+    min_x, min_y = int(min_x), int(min_y)
+    max_x, max_y = int(max_x), int(max_y)
+    
+    # Calculate crop dimensions
+    crop_width = max_x - min_x + 1
+    crop_height = max_y - min_y + 1
+    
+    # Ensure we have valid crop dimensions
+    if crop_width <= 0 or crop_height <= 0:
+        print("Warning: Could not determine crop region, using original images")
+        cropped_images = [Image.fromarray(img) for img in aligned_images]
+    else:
+        # Crop all images to the same region
+        cropped_images = []
+        for img_array in aligned_images:
+            cropped = img_array[min_y:max_y+1, min_x:max_x+1]
+            cropped_images.append(Image.fromarray(cropped))
+        
+        print(f"Cropped from original size to {crop_width}x{crop_height}")
+    
+    # Save as GIF
+    cropped_images[0].save(
+        output_path,
+        save_all=True,
+        append_images=cropped_images[1:],
+        duration=500,
+        loop=0
+    )
+    
+    print(f"Cropped GIF created: {output_path}")
 
 def robust_manual_alignment_with_correction(image_paths, output_gif_path):
     """
@@ -307,6 +411,15 @@ def robust_manual_alignment_with_correction(image_paths, output_gif_path):
     
     print(f"Enhanced GIF created successfully: {output_gif_path}")
     
+    # Create additional GIFs as requested
+    # 1. GIF showing detection boxes on original images
+    detection_gif_path = output_gif_path.replace('.gif', '_detection_boxes.gif')
+    create_detection_boxes_gif(images, detection_info, detection_gif_path)
+    
+    # 2. GIF with black space cropped out
+    cropped_gif_path = output_gif_path.replace('.gif', '_cropped.gif')
+    create_cropped_gif(aligned_images, cropped_gif_path)
+    
     # Show final preview
     preview_alignment_with_detection(images, aligned_images, detection_info, "Final Alignment Preview")
 
@@ -460,17 +573,16 @@ def preview_alignment_with_detection(original_images, aligned_images, detection_
 
 # Usage example
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python script.py <folder_name>")
-        print("Example: python script.py my_photos")
-        sys.exit(1)
-    
-    folder_name = sys.argv[1]
+    parser = argparse.ArgumentParser(prog="Image Aligner")
+
+    parser.add_argument("path", "path to images")
+
+    args = parser.parse_args()
     
     # Get all image files from a directory
-    image_paths = glob.glob(os.path.expanduser(f"~/Downloads/{folder_name}/*"))
+    image_paths = glob.glob(os.path.expanduser(args.path))
     # Filter for common image extensions
-    image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.JPG', '.JPEG', '.PNG', '.BMP', '.TIFF']
+    image_extensions = ['.jpg', '.png']
     image_paths = [path for path in image_paths if any(path.lower().endswith(ext.lower()) for ext in image_extensions)]
     image_paths.sort()  # Sort to ensure consistent ordering
     
